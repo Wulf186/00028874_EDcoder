@@ -495,25 +495,6 @@ export default function NVItemEncoderDecoder() {
     console.log('originalGroups count:', originalGroups.length);
     console.log('encodeEntries count:', encodeEntries.length);
 
-    // Build DL key for entry (without ulclass - only band:bclass:ant)
-    const getDLKeyFromCarriers = (carriers) => {
-      const parts = [];
-      for (let i = 0; i < 6; i++) {
-        const c = carriers[i] || { band: 0, bclass: 0, ant: 0 };
-        parts.push(`${c.band}:${c.bclass}:${c.ant}`);
-      }
-      return parts.join('|');
-    };
-
-    // Build DL key from group data
-    const getGroupDLKey = (group) => {
-      const parts = [];
-      for (let i = 0; i < 6; i++) {
-        parts.push(`${group.band[i] || 0}:${group.bclass[i] || 0}:${group.ant[i] || 0}`);
-      }
-      return parts.join('|');
-    };
-
     // Normalize carriers array to 6 elements
     const normalizeCarriers = (carriers) => {
       const result = [];
@@ -523,88 +504,111 @@ export default function NVItemEncoderDecoder() {
       return result;
     };
 
-    // Create a map of entries by their DL key (normalized)
-    const entriesByDL = new Map();
-    
-    for (let i = 0; i < encodeEntries.length; i++) {
-      const entry = encodeEntries[i];
-      if (!entry.carriers || entry.carriers.length === 0) continue;
-      
-      const normalizedCarriers = normalizeCarriers(entry.carriers);
-      const dlKey = getDLKeyFromCarriers(normalizedCarriers);
-      
-      if (!entriesByDL.has(dlKey)) {
-        entriesByDL.set(dlKey, []);
+    // Build DL key for comparison
+    const getDLKeyFromCarriers = (carriers) => {
+      const norm = normalizeCarriers(carriers);
+      return norm.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
+    };
+
+    const getGroupDLKey = (group) => {
+      const parts = [];
+      for (let i = 0; i < 6; i++) {
+        parts.push(`${group.band[i] || 0}:${group.bclass[i] || 0}:${group.ant[i] || 0}`);
       }
-      entriesByDL.get(dlKey).push({ entry, index: i, normalizedCarriers });
-    }
+      return parts.join('|');
+    };
 
-    console.log('Unique DL keys in entries:', entriesByDL.size);
-
-    // Build groups for encoding using original group structure
+    // Strategy: Use groupIdx if available, otherwise fall back to DL key matching
+    // This preserves the exact original structure including duplicate DL groups
+    
     const encodingGroups = [];
     const usedEntries = new Set();
 
-    // Process original groups - match entries by DL key
-    for (const group of originalGroups) {
-      const groupDLKey = getGroupDLKey(group);
-      const matchingEntries = entriesByDL.get(groupDLKey) || [];
+    // First pass: match entries to groups by groupIdx (preserves duplicates)
+    for (let groupIdx = 0; groupIdx < originalGroups.length; groupIdx++) {
+      const group = originalGroups[groupIdx];
+      const matchingEntries = [];
       
-      // Get entries that haven't been used yet
-      const availableEntries = matchingEntries.filter(m => !usedEntries.has(m.index));
+      for (let i = 0; i < encodeEntries.length; i++) {
+        if (usedEntries.has(i)) continue;
+        const entry = encodeEntries[i];
+        
+        // Match by groupIdx if available
+        if (entry.groupIdx === groupIdx) {
+          matchingEntries.push(entry);
+          usedEntries.add(i);
+        }
+      }
       
-      if (availableEntries.length > 0) {
+      if (matchingEntries.length > 0) {
         encodingGroups.push({
           descType: group.descType,
           band: [...group.band],
           bclass: [...group.bclass],
           ant: [...group.ant],
-          entries: availableEntries.map(m => m.entry)
+          entries: matchingEntries
         });
+      }
+    }
+
+    console.log('After groupIdx matching:', encodingGroups.length, 'groups,', usedEntries.size, 'entries used');
+
+    // Second pass: match remaining entries by DL key (for new/edited entries)
+    if (usedEntries.size < encodeEntries.length) {
+      // Group remaining entries by DL key
+      const remainingByDL = new Map();
+      
+      for (let i = 0; i < encodeEntries.length; i++) {
+        if (usedEntries.has(i)) continue;
+        const entry = encodeEntries[i];
+        if (!entry.carriers || entry.carriers.length === 0) continue;
         
-        // Mark these entries as used
-        availableEntries.forEach(m => usedEntries.add(m.index));
+        const dlKey = getDLKeyFromCarriers(entry.carriers);
+        if (!remainingByDL.has(dlKey)) {
+          remainingByDL.set(dlKey, []);
+        }
+        remainingByDL.get(dlKey).push({ entry, index: i });
+      }
+
+      // Try to match to existing encoding groups by DL key
+      for (const [dlKey, entriesForKey] of remainingByDL) {
+        let matched = false;
+        
+        // Find an existing group with same DL key
+        for (const group of encodingGroups) {
+          const groupDLKey = getGroupDLKey({ band: group.band, bclass: group.bclass, ant: group.ant });
+          if (groupDLKey === dlKey) {
+            // Add to existing group
+            for (const { entry, index } of entriesForKey) {
+              group.entries.push(entry);
+              usedEntries.add(index);
+            }
+            matched = true;
+            break;
+          }
+        }
+        
+        // If no existing group, create a new one
+        if (!matched) {
+          const firstEntry = entriesForKey[0].entry;
+          const normalized = normalizeCarriers(firstEntry.carriers);
+          const needsExtended = normalized.some(c => c.ant !== 2 && c.ant !== 0 && c.band !== 0);
+          
+          encodingGroups.push({
+            descType: needsExtended ? 201 : 137,
+            band: normalized.map(c => c.band),
+            bclass: normalized.map(c => c.bclass),
+            ant: normalized.map(c => c.ant),
+            entries: entriesForKey.map(e => e.entry)
+          });
+          
+          entriesForKey.forEach(e => usedEntries.add(e.index));
+        }
       }
     }
 
-    console.log('encodingGroups count:', encodingGroups.length);
+    console.log('Final encodingGroups count:', encodingGroups.length);
     console.log('Total entries used:', usedEntries.size);
-
-    // Add new groups for entries not matching any original group
-    const remainingByDL = new Map();
-    for (let i = 0; i < encodeEntries.length; i++) {
-      if (usedEntries.has(i)) continue;
-      
-      const entry = encodeEntries[i];
-      if (!entry.carriers || entry.carriers.length === 0) continue;
-      
-      const normalizedCarriers = normalizeCarriers(entry.carriers);
-      const dlKey = getDLKeyFromCarriers(normalizedCarriers);
-      
-      if (!remainingByDL.has(dlKey)) {
-        remainingByDL.set(dlKey, { carriers: normalizedCarriers, entries: [] });
-      }
-      remainingByDL.get(dlKey).entries.push(entry);
-    }
-
-    // Create new groups for remaining entries
-    for (const [dlKey, data] of remainingByDL) {
-      // Determine descriptor type based on MIMO values
-      const needsExtended = data.carriers.some(c => c.ant !== 2 && c.ant !== 0 && c.band !== 0);
-      const descType = needsExtended ? 201 : 137;
-      
-      const band = data.carriers.map(c => c.band);
-      const bclass = data.carriers.map(c => c.bclass);
-      const ant = data.carriers.map(c => c.ant);
-      
-      encodingGroups.push({
-        descType,
-        band,
-        bclass,
-        ant,
-        entries: data.entries
-      });
-    }
 
     // Calculate buffer size
     let totalSize = 4; // Header
