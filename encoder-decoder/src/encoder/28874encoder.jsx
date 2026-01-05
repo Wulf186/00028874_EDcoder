@@ -1,5 +1,18 @@
 // ==================== ENCODER LOGIC ====================
 
+import pako from 'pako';
+
+// Compress buffer using zlib
+export const compressZlib = (arrayBuffer) => {
+  try {
+    const uncompressed = new Uint8Array(arrayBuffer);
+    const compressed = pako.deflate(uncompressed);
+    return compressed.buffer;
+  } catch (e) {
+    throw new Error(`Zlib compression failed: ${e.message}`);
+  }
+};
+
 export const parseComboString = (comboStr) => {
     const carriers = [];
     const parts = comboStr.trim().split('-');

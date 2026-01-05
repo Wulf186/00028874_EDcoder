@@ -20,6 +20,7 @@ export default function NVItemEncoderDecoder() {
   const [autoDescriptorType, setAutoDescriptorType] = useState(true); // Auto-select 137 or 201 per combo
   const [preserveOriginalGrouping, setPreserveOriginalGrouping] = useState(false);
   const [originalGroups, setOriginalGroups] = useState(null); // Stored from decoder
+  const [useCompression, setUseCompression] = useState(false); // Compress with zlib
   
   const [isDragging, setIsDragging] = useState(false);
   const buildEncodeBuffer = useCallback(() => (
@@ -93,7 +94,8 @@ export default function NVItemEncoderDecoder() {
     setEncodeError,
     setFormatVersion,
     setOriginalGroups,
-    setPreserveOriginalGrouping
+    setPreserveOriginalGrouping,
+    useCompression
   });
 // ==================== RENDER ====================
 
@@ -199,8 +201,16 @@ export default function NVItemEncoderDecoder() {
                 <div className="bg-gray-800 rounded-lg p-4">
                   <h2 className="text-lg font-semibold mb-3 text-blue-300">File Information</h2>
                   <div className="grid grid-cols-2 gap-2 text-sm">
+                    {decodeResults.wasCompressed && (
+                      <>
+                        <div className="text-gray-400">Compression:</div>
+                        <div className="text-green-400 font-semibold">
+                          zlib ({decodeResults.originalSize} → {decodeResults.fileSize} bytes, -{decodeResults.compressionRatio}%)
+                        </div>
+                      </>
+                    )}
                     <div className="text-gray-400">File size:</div>
-                    <div>{decodeResults.fileSize} bytes</div>
+                    <div>{decodeResults.fileSize} bytes {decodeResults.wasCompressed && <span className="text-xs text-gray-500">(decompressed)</span>}</div>
                     <div className="text-gray-400">Format version:</div>
                     <div>{decodeResults.formatVersion}</div>
                     <div className="text-gray-400">Number of descriptors:</div>
@@ -397,6 +407,17 @@ export default function NVItemEncoderDecoder() {
                       </label>
                     </>
                   )}
+
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={useCompression}
+                      onChange={(e) => setUseCompression(e.target.checked)}
+                      className="w-4 h-4 accent-blue-500"
+                    />
+                    <span className="text-blue-300 font-medium">Compress with zlib</span>
+                    <span className="text-gray-500 text-xs">(reduce file size by ~50-70%)</span>
+                  </label>
                 </div>
               </div>
 
