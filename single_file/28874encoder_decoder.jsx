@@ -708,20 +708,22 @@ export default function NVItemEncoderDecoder() {
           if (ulCarriers.length > 0) {
             writeUint16(ulCarriers[0].band);
             writeUint8(ulCarriers[0].ulclass);
+            writeUint8(2);  // UL MIMO is always 2 in this format
           } else {
             writeUint16(0);
             writeUint8(0);
+            writeUint8(0);
           }
-          writeUint8(0);
           
           if (ulCarriers.length > 1) {
             writeUint16(ulCarriers[1].band);
             writeUint8(ulCarriers[1].ulclass);
+            writeUint8(2);  // UL MIMO is always 2 in this format
           } else {
             writeUint16(0);
             writeUint8(0);
+            writeUint8(0);
           }
-          writeUint8(0);
           
           writeZeros(16);
         }
@@ -950,20 +952,22 @@ export default function NVItemEncoderDecoder() {
         if (ulCarriers.length > 0) {
           writeUint16(ulCarriers[0].band);
           writeUint8(ulCarriers[0].ulclass);
+          writeUint8(2);  // UL MIMO is always 2 in this format
         } else {
           writeUint16(0);
           writeUint8(0);
+          writeUint8(0);
         }
-        writeUint8(0);
         
         if (ulCarriers.length > 1) {
           writeUint16(ulCarriers[1].band);
           writeUint8(ulCarriers[1].ulclass);
+          writeUint8(2);  // UL MIMO is always 2 in this format
         } else {
           writeUint16(0);
           writeUint8(0);
+          writeUint8(0);
         }
-        writeUint8(0);
         
         writeZeros(16);
       }
