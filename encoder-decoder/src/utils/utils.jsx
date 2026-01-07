@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { calculateStreams, checkHasULCA, parseComboFile, parseComboString } from '../encoder/28874encoder';
+import { calculateStreams, checkHasULCA, parseComboFile, parseComboString, compressZlib } from '../encoder/28874encoder';
 
 // ==================== FILE HANDLERS ====================
 
@@ -203,7 +203,8 @@ export const useExportHandlers = ({
   setEncodeError,
   setFormatVersion,
   setOriginalGroups,
-  setPreserveOriginalGrouping
+  setPreserveOriginalGrouping,
+  useCompression
 }) => {
   const handleDecodeExport = useCallback(() => {
     if (!decodeResults || decodeResults.combos.length === 0) return;
@@ -242,7 +243,17 @@ export const useExportHandlers = ({
 
   const handleEncodeExport = useCallback(() => {
     try {
-      const buffer = encodeToBuffer();
+      let buffer = encodeToBuffer();
+
+      // Apply compression if enabled
+      if (useCompression) {
+        const originalSize = buffer.byteLength;
+        buffer = compressZlib(buffer);
+        const compressedSize = buffer.byteLength;
+        const ratio = ((1 - compressedSize / originalSize) * 100).toFixed(1);
+        console.log(`Compressed: ${originalSize} → ${compressedSize} bytes (-${ratio}%)`);
+      }
+
       const blob = new Blob([buffer], { type: 'application/octet-stream' });
       const url = URL.createObjectURL(blob);
 
@@ -256,7 +267,7 @@ export const useExportHandlers = ({
     } catch (err) {
       setEncodeError('Export failed: ' + err.message);
     }
-  }, [encodeToBuffer, setEncodeError]);
+  }, [encodeToBuffer, setEncodeError, useCompression]);
 
   const handleExportTxt = useCallback(() => {
     if (encodeEntries.length === 0) return;

@@ -1,12 +1,52 @@
 // ==================== DECODER LOGIC ====================
 
+import pako from 'pako';
+
+// Check if data is zlib compressed
+const isZlibCompressed = (data) => {
+  if (data.byteLength < 2) return false;
+  const view = new DataView(data);
+  const firstByte = view.getUint8(0);
+  const secondByte = view.getUint8(1);
+
+  // Check for zlib header (0x78 followed by 0x01, 0x5E, 0x9C, or 0xDA)
+  return firstByte === 0x78 && [0x01, 0x5E, 0x9C, 0xDA].includes(secondByte);
+};
+
+// Decompress zlib data
+const decompressZlib = (arrayBuffer) => {
+  try {
+    const compressed = new Uint8Array(arrayBuffer);
+    const decompressed = pako.inflate(compressed);
+    return decompressed.buffer;
+  } catch (e) {
+    throw new Error(`Zlib decompression failed: ${e.message}`);
+  }
+};
+
 export const decodeFile = (arrayBuffer) => {
-  const data = new DataView(arrayBuffer);
-  const fileSize = arrayBuffer.byteLength;
+  let processedBuffer = arrayBuffer;
+  let wasCompressed = false;
+  let originalSize = arrayBuffer.byteLength;
+
+  // Check if file is zlib compressed and decompress
+  if (isZlibCompressed(arrayBuffer)) {
+    try {
+      processedBuffer = decompressZlib(arrayBuffer);
+      wasCompressed = true;
+    } catch (e) {
+      throw new Error(`Failed to decompress file: ${e.message}`);
+    }
+  }
+  const data = new DataView(processedBuffer);
+  const fileSize = processedBuffer.byteLength;
   let fptr = 0;
 
   const output = {
     fileSize,
+    originalSize,
+    wasCompressed,
+    compressionRatio: wasCompressed ? ((1 - originalSize / fileSize) * 100).toFixed(1) : null,
     formatVersion: 0,
     numDescriptors: 0,
     combos: [],
