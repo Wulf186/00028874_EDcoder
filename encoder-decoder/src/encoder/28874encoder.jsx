@@ -615,9 +615,22 @@ export const encodeToBuffer = ({
   }
 
   // Group entries by DL key (with canonical ordering)
+  // Returns array of group objects with { dlData, entries }
   const groupByDL = (entries) => {
     if (!optimizeGrouping) {
-      return entries.map(e => [e]);
+      // Each entry in its own group, with its own DL data
+      return entries.map(e => {
+        const normalized = normalizeCarriers(e.carriers || []);
+        const padded = padCarriers(normalized);
+        return {
+          dlData: {
+            band: padded.map(c => c.band),
+            bclass: padded.map(c => c.bclass),
+            ant: padded.map(c => c.ant)
+          },
+          entries: [e]
+        };
+      }).filter(g => g.entries[0].carriers && g.entries[0].carriers.length > 0);
     }
 
     const groupMap = new Map();
@@ -626,12 +639,21 @@ export const encodeToBuffer = ({
 
       // Normalize carriers for canonical key
       const normalized = normalizeCarriers(entry.carriers);
+      const padded = padCarriers(normalized);
       const dlKey = getDLKey(normalized);
 
       if (!groupMap.has(dlKey)) {
-        groupMap.set(dlKey, []);
+        // Store the canonical DL data in the group (not just entries)
+        groupMap.set(dlKey, {
+          dlData: {
+            band: padded.map(c => c.band),
+            bclass: padded.map(c => c.bclass),
+            ant: padded.map(c => c.ant)
+          },
+          entries: []
+        });
       }
-      groupMap.get(dlKey).push(entry);
+      groupMap.get(dlKey).entries.push(entry);
     }
 
     // Sort groups by key for deterministic output
@@ -649,20 +671,20 @@ export const encodeToBuffer = ({
 
   for (const group of groups137) {
     totalSize += 20; // One 137 descriptor
-    totalSize += group.length * 20; // 138 descriptors
-    numDescriptors += 1 + group.length;
+    totalSize += group.entries.length * 20; // 138 descriptors
+    numDescriptors += 1 + group.entries.length;
   }
 
   for (const group of groups201) {
     totalSize += 26; // One 201 descriptor
-    totalSize += group.length * 26; // 202 descriptors
-    numDescriptors += 1 + group.length;
+    totalSize += group.entries.length * 26; // 202 descriptors
+    numDescriptors += 1 + group.entries.length;
   }
 
   for (const group of groups333) {
     totalSize += 68; // One 333 descriptor
-    totalSize += group.length * 68; // 334 descriptors
-    numDescriptors += 1 + group.length;
+    totalSize += group.entries.length * 68; // 334 descriptors
+    numDescriptors += 1 + group.entries.length;
   }
 
   const buffer = new ArrayBuffer(totalSize);
@@ -691,17 +713,17 @@ export const encodeToBuffer = ({
 
   // Write 137/138 groups
   for (const group of groups137) {
-    const firstEntry = group[0];
-    const carriers = padCarriers(normalizeCarriers(firstEntry.carriers));
+    // Use pre-computed DL data from the group
+    const { dlData, entries } = group;
 
     writeUint16(137);
     for (let i = 0; i < 6; i++) {
-      writeUint16(carriers[i].band);
-      writeUint8(carriers[i].bclass);
+      writeUint16(dlData.band[i] || 0);
+      writeUint8(dlData.bclass[i] || 0);
     }
 
     // Sort entries for deterministic output
-    const sortedEntries = [...group].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
+    const sortedEntries = [...entries].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
 
     for (const entry of sortedEntries) {
       const entryCarriers = padCarriers(entry.carriers);
@@ -731,17 +753,17 @@ export const encodeToBuffer = ({
 
   // Write 201/202 groups
   for (const group of groups201) {
-    const firstEntry = group[0];
-    const carriers = padCarriers(normalizeCarriers(firstEntry.carriers));
+    // Use pre-computed DL data from the group
+    const { dlData, entries } = group;
 
     writeUint16(201);
     for (let i = 0; i < 6; i++) {
-      writeUint16(carriers[i].band);
-      writeUint8(carriers[i].bclass);
-      writeUint8(carriers[i].ant);
+      writeUint16(dlData.band[i] || 0);
+      writeUint8(dlData.bclass[i] || 0);
+      writeUint8(dlData.ant[i] || 0);
     }
 
-    const sortedEntries = [...group].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
+    const sortedEntries = [...entries].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
 
     for (const entry of sortedEntries) {
       const entryCarriers = padCarriers(entry.carriers);
@@ -775,15 +797,15 @@ export const encodeToBuffer = ({
 
   // Write 333/334 groups
   for (const group of groups333) {
-    const firstEntry = group[0];
-    const carriers = padCarriers(normalizeCarriers(firstEntry.carriers));
+    // Use pre-computed DL data from the group
+    const { dlData, entries } = group;
 
     writeUint16(333);
     for (let i = 0; i < 6; i++) {
-      writeUint16(carriers[i].band);
-      writeUint8(carriers[i].bclass);
+      writeUint16(dlData.band[i] || 0);
+      writeUint8(dlData.bclass[i] || 0);
 
-      const antStr = (carriers[i].ant || 0).toString();
+      const antStr = (dlData.ant[i] || 0).toString();
       for (let j = 0; j < 8; j++) {
         if (j < antStr.length) {
           writeUint8(parseInt(antStr[j], 10));
@@ -793,7 +815,7 @@ export const encodeToBuffer = ({
       }
     }
 
-    const sortedEntries = [...group].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
+    const sortedEntries = [...entries].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
 
     for (const entry of sortedEntries) {
       const entryCarriers = padCarriers(entry.carriers);

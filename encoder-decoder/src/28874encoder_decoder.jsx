@@ -3,6 +3,7 @@ import { decodeFile } from './decoder/28874decoder';
 import { encodeToBuffer } from './encoder/28874encoder';
 import { useEncoderTableHandlers, useExportHandlers, useFileHandlers } from './utils/utils';
 import ComboBuilder from './builder/ComboBuilder';
+import { getDLKey, sortCarriersByBand } from './shared/index.js';
 
 export default function NVItemEncoderDecoder() {
   const [activeTab, setActiveTab] = useState('decoder');
@@ -587,10 +588,20 @@ export default function NVItemEncoderDecoder() {
               // Convert generated combos to encoder entry format
               const newEntries = combos.map(combo => {
                 try {
-                  // New format: combos already have carriers array
-                  // Just need to ensure dlKey is set
-                  const carriers = combo.carriers || [];
-                  const dlKey = carriers.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
+                  // Clone carriers to avoid reference issues
+                  const carriers = (combo.carriers || []).map(c => ({
+                    band: c.band,
+                    bclass: c.bclass,
+                    ant: c.ant,
+                    ulclass: c.ulclass || 0,
+                    dlClass: c.dlClass,
+                    mimoDl: c.mimoDl,
+                    ulClass: c.ulClass
+                  }));
+
+                  // Use proper getDLKey with sorted carriers for consistency
+                  const sortedCarriers = sortCarriersByBand(carriers);
+                  const dlKey = getDLKey(sortedCarriers);
 
                   return {
                     text: combo.text,
