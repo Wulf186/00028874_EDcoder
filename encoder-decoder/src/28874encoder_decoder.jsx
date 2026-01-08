@@ -587,13 +587,9 @@ export default function NVItemEncoderDecoder() {
               // Convert generated combos to encoder entry format
               const newEntries = combos.map(combo => {
                 try {
-                  const carriers = combo.bandConfigs.map(bc => ({
-                    band: bc.band,
-                    bclass: bc.bclass.charCodeAt(0) - 0x40,
-                    ant: bc.mimo,
-                    ulclass: bc.ulca ? 1 : 0
-                  }));
-
+                  // New format: combos already have carriers array
+                  // Just need to ensure dlKey is set
+                  const carriers = combo.carriers || [];
                   const dlKey = carriers.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
 
                   return {
@@ -602,7 +598,7 @@ export default function NVItemEncoderDecoder() {
                     streams: combo.streams,
                     hasULCA: combo.hasULCA,
                     dlKey,
-                    descType: 201 // Default
+                    descType: carriers.some(c => c.ant !== 2 && c.ant !== 0) ? 201 : 137
                   };
                 } catch (e) {
                   console.error('Error converting combo:', e);
