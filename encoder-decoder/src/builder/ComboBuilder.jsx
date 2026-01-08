@@ -85,8 +85,8 @@ export default function ComboBuilder({ onAddToEncoder }) {
   // Band configuration state
   const [selectedBands, setSelectedBands] = useState([]);
   const [bandConfigs, setBandConfigs] = useState({});
-  const [numBands, setNumBands] = useState(2);
   const [generatedCombos, setGeneratedCombos] = useState([]);
+  const [generateAllLengths, setGenerateAllLengths] = useState(false);
 
   // Common LTE bands
   const availableBands = [1, 2, 3, 4, 5, 7, 8, 12, 13, 17, 20, 25, 26, 28, 29, 30, 38, 39, 40, 41, 42, 43, 66, 71];
@@ -125,42 +125,49 @@ export default function ComboBuilder({ onAddToEncoder }) {
 
   // Generate all combinations
   const generateCombinations = () => {
-    if (selectedBands.length < numBands) {
-      alert(`Please select at least ${numBands} bands`);
+    if (selectedBands.length < 2) {
+      alert('Please select at least 2 bands');
       return;
     }
 
     const combos = [];
 
-    // Generate all permutations of selected bands with chosen length
-    const permutations = generatePermutations(selectedBands, numBands);
+    // Determine which lengths to generate
+    const lengths = generateAllLengths
+      ? Array.from({ length: selectedBands.length - 1 }, (_, i) => i + 2) // [2, 3, ..., selectedBands.length]
+      : [selectedBands.length]; // Only use all selected bands
 
-    for (const perm of permutations) {
-      // Build band configs array for this permutation
-      const configs = perm.map(band => ({
-        band,
-        bclass: bandConfigs[band]?.bclass || 'A',
-        mimo: bandConfigs[band]?.mimo || 2,
-        ulca: bandConfigs[band]?.ulca || false
-      }));
+    for (const length of lengths) {
+      // Generate all permutations of selected bands with current length
+      const permutations = generatePermutations(selectedBands, length);
 
-      // Generate priority variants
-      const variants = generatePriorityVariants(configs);
+      for (const perm of permutations) {
+        // Build band configs array for this permutation
+        const configs = perm.map(band => ({
+          band,
+          bclass: bandConfigs[band]?.bclass || 'A',
+          mimo: bandConfigs[band]?.mimo || 2,
+          ulca: bandConfigs[band]?.ulca || false
+        }));
 
-      // Add all variants to combos list
-      for (const variant of variants) {
-        const streams = calculateStreamsFromCombo(variant.bandConfigs);
+        // Generate priority variants
+        const variants = generatePriorityVariants(configs);
 
-        // Check if any band has UL CA
-        const hasULCA = variant.bandConfigs.some(c => c.ulca);
+        // Add all variants to combos list
+        for (const variant of variants) {
+          const streams = calculateStreamsFromCombo(variant.bandConfigs);
 
-        combos.push({
-          text: variant.comboStr,
-          streams,
-          hasULCA,
-          bandConfigs: variant.bandConfigs,
-          priorityIndex: variant.priorityIndex
-        });
+          // Check if any band has UL CA
+          const hasULCA = variant.bandConfigs.some(c => c.ulca);
+
+          combos.push({
+            text: variant.comboStr,
+            streams,
+            hasULCA,
+            bandConfigs: variant.bandConfigs,
+            priorityIndex: variant.priorityIndex
+          });
+        }
       }
     }
 
@@ -199,25 +206,16 @@ export default function ComboBuilder({ onAddToEncoder }) {
       <div className="bg-gray-800 rounded-lg p-4">
         <h2 className="text-lg font-semibold mb-4 text-purple-300">Combo Configuration</h2>
 
-        {/* Number of bands to aggregate */}
-        <div className="mb-4">
-          <label className="block text-gray-400 text-sm mb-2">Number of bands to aggregate</label>
-          <select
-            value={numBands}
-            onChange={(e) => setNumBands(parseInt(e.target.value))}
-            className="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 text-white"
-          >
-            <option value={2}>2 bands</option>
-            <option value={3}>3 bands</option>
-            <option value={4}>4 bands</option>
-            <option value={5}>5 bands</option>
-            <option value={6}>6 bands</option>
-          </select>
-        </div>
-
         {/* Band Selection */}
         <div className="mb-4">
-          <label className="block text-gray-400 text-sm mb-2">Select bands ({selectedBands.length} selected)</label>
+          <label className="block text-gray-400 text-sm mb-2">
+            Select bands ({selectedBands.length} selected)
+            {selectedBands.length >= 2 && (
+              <span className="text-purple-400 ml-2">
+                → Will generate {generateAllLengths ? `2 to ${selectedBands.length}` : selectedBands.length}-band combos
+              </span>
+            )}
+          </label>
           <div className="grid grid-cols-6 gap-2">
             {availableBands.map(band => (
               <button
@@ -289,12 +287,30 @@ export default function ComboBuilder({ onAddToEncoder }) {
           </div>
         )}
 
+        {/* Generation Options */}
+        {selectedBands.length >= 3 && (
+          <div className="mt-4 mb-2">
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={generateAllLengths}
+                onChange={(e) => setGenerateAllLengths(e.target.checked)}
+                className="w-4 h-4 accent-purple-500"
+              />
+              <span className="text-gray-300">Generate all combo lengths (2 to {selectedBands.length} bands)</span>
+            </label>
+            <p className="text-gray-500 text-xs mt-1 ml-7">
+              When enabled, generates all possible lengths. When disabled, only generates {selectedBands.length}-band combos.
+            </p>
+          </div>
+        )}
+
         {/* Generate Button */}
         <button
           onClick={generateCombinations}
-          disabled={selectedBands.length < numBands}
+          disabled={selectedBands.length < 2}
           className={`w-full mt-4 py-3 rounded-lg font-medium transition-colors ${
-            selectedBands.length >= numBands
+            selectedBands.length >= 2
               ? 'bg-purple-600 hover:bg-purple-500 text-white'
               : 'bg-gray-700 text-gray-500 cursor-not-allowed'
           }`}
@@ -374,11 +390,16 @@ export default function ComboBuilder({ onAddToEncoder }) {
       <div className="bg-blue-900/20 border border-blue-700 rounded-lg p-4 text-sm text-blue-200">
         <h3 className="font-semibold mb-2">How it works:</h3>
         <ul className="space-y-1 list-disc list-inside">
-          <li>Select bands and configure their class (bandwidth) and MIMO settings</li>
-          <li>Choose how many bands to aggregate (2-6 bands)</li>
-          <li>The builder generates all permutations with priority marker variants</li>
-          <li>For 2-band combos: 3 variants per permutation (no priority, first priority, second priority)</li>
-          <li>For 3+ band combos: N variants per permutation (priority at each position)</li>
+          <li>Select bands you want to use (minimum 2 bands)</li>
+          <li>Configure each band's class (bandwidth), MIMO, and UL CA settings</li>
+          <li>By default, generates combos using all selected bands</li>
+          <li>Enable "Generate all combo lengths" to create 2-band, 3-band, etc. up to all selected bands</li>
+          <li>The builder generates all permutations with priority marker variants:
+            <ul className="ml-6 mt-1 space-y-0.5">
+              <li className="text-xs">• 2-band combos: 3 variants (no priority, first priority, second priority)</li>
+              <li className="text-xs">• 3+ band combos: N variants (priority at each position)</li>
+            </ul>
+          </li>
           <li>Streams are calculated automatically based on class and MIMO</li>
           <li>Click "Add to Encoder" to add all generated combos to the encoder tab</li>
         </ul>
