@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import { decodeFile } from './decoder/28874decoder';
 import { encodeToBuffer } from './encoder/28874encoder';
 import { useEncoderTableHandlers, useExportHandlers, useFileHandlers } from './utils/utils';
+import ComboBuilder from './builder/ComboBuilder';
 
 export default function NVItemEncoderDecoder() {
   const [activeTab, setActiveTab] = useState('decoder');
@@ -129,62 +130,76 @@ export default function NVItemEncoderDecoder() {
           >
             📤 Encoder
           </button>
+          <button
+            onClick={() => setActiveTab('builder')}
+            className={`px-6 py-2 rounded-lg font-medium transition-colors ${
+              activeTab === 'builder'
+                ? 'bg-purple-600 text-white'
+                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+            }`}
+          >
+            🔧 Combo Builder
+          </button>
         </div>
 
-        {/* File Upload Area */}
-        <div
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
-            isDragging
-              ? 'border-blue-400 bg-blue-900/20'
-              : 'border-gray-600 hover:border-gray-500'
-          }`}
-        >
-          <input
-            type="file"
-            id="fileInput"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (activeTab === 'decoder') {
-                handleDecodeFile(file);
-              } else {
-                handleEncodeFile(file, false);
-              }
-              e.target.value = '';
-            }}
-          />
-          <label htmlFor="fileInput" className="cursor-pointer">
-            <div className="text-4xl mb-3">📁</div>
-            <p className="text-gray-300">Drop file here or click to select</p>
-            <p className="text-gray-500 text-sm mt-1">
-              {activeTab === 'decoder' ? 'Binary NV item file' : 'Text file with combo list (replaces current)'}
-            </p>
-          </label>
-        </div>
-
-        {/* Encoder: Add file button */}
-        {activeTab === 'encoder' && encodeEntries.length > 0 && (
-          <div className="mt-2 flex gap-2">
-            <input
-              type="file"
-              id="appendFileInput"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                handleEncodeFile(file, true);
-                e.target.value = '';
-              }}
-            />
-            <label 
-              htmlFor="appendFileInput" 
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded cursor-pointer text-sm"
+        {/* File Upload Area - only show for decoder and encoder tabs */}
+        {activeTab !== 'builder' && (
+          <>
+            <div
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
+                isDragging
+                  ? 'border-blue-400 bg-blue-900/20'
+                  : 'border-gray-600 hover:border-gray-500'
+              }`}
             >
-              ➕ Add from file
-            </label>
-          </div>
+              <input
+                type="file"
+                id="fileInput"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (activeTab === 'decoder') {
+                    handleDecodeFile(file);
+                  } else {
+                    handleEncodeFile(file, false);
+                  }
+                  e.target.value = '';
+                }}
+              />
+              <label htmlFor="fileInput" className="cursor-pointer">
+                <div className="text-4xl mb-3">📁</div>
+                <p className="text-gray-300">Drop file here or click to select</p>
+                <p className="text-gray-500 text-sm mt-1">
+                  {activeTab === 'decoder' ? 'Binary NV item file' : 'Text file with combo list (replaces current)'}
+                </p>
+              </label>
+            </div>
+
+            {/* Encoder: Add file button */}
+            {activeTab === 'encoder' && encodeEntries.length > 0 && (
+              <div className="mt-2 flex gap-2">
+                <input
+                  type="file"
+                  id="appendFileInput"
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    handleEncodeFile(file, true);
+                    e.target.value = '';
+                  }}
+                />
+                <label
+                  htmlFor="appendFileInput"
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded cursor-pointer text-sm"
+                >
+                  ➕ Add from file
+                </label>
+              </div>
+            )}
+          </>
         )}
 
         {/* ==================== DECODER TAB ==================== */}
@@ -563,6 +578,51 @@ export default function NVItemEncoderDecoder() {
               )}
             </div>
           </>
+        )}
+
+        {/* ==================== BUILDER TAB ==================== */}
+        {activeTab === 'builder' && (
+          <ComboBuilder
+            onAddToEncoder={(combos) => {
+              // Convert generated combos to encoder entry format
+              const newEntries = combos.map(combo => {
+                try {
+                  const carriers = combo.bandConfigs.map(bc => ({
+                    band: bc.band,
+                    bclass: bc.bclass.charCodeAt(0) - 0x40,
+                    ant: bc.mimo,
+                    ulclass: bc.ulca ? 1 : 0
+                  }));
+
+                  const dlKey = carriers.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
+
+                  return {
+                    text: combo.text,
+                    carriers,
+                    streams: combo.streams,
+                    hasULCA: combo.hasULCA,
+                    dlKey,
+                    descType: 201 // Default
+                  };
+                } catch (e) {
+                  console.error('Error converting combo:', e);
+                  return null;
+                }
+              }).filter(Boolean);
+
+              // Add to encoder entries
+              setEncodeEntries(prev => [...prev, ...newEntries]);
+
+              // Clear original groups when adding from builder
+              setOriginalGroups(null);
+
+              // Switch to encoder tab to show results
+              setActiveTab('encoder');
+
+              // Show confirmation
+              alert(`Added ${newEntries.length} combinations to encoder`);
+            }}
+          />
         )}
 
         <footer className="mt-8 text-center text-gray-500 text-xs">
