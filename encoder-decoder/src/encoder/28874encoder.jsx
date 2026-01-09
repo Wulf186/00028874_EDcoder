@@ -341,13 +341,6 @@ export const encodeWithOriginalGrouping = ({ encodeEntries, formatVersion, origi
   console.log('Final encodingGroups count:', encodingGroups.length);
   console.log('Total entries used:', usedEntries.size);
 
-  // Sort groups for deterministic output
-  encodingGroups.sort((a, b) => {
-    const keyA = a.band.join(':');
-    const keyB = b.band.join(':');
-    return keyA.localeCompare(keyB);
-  });
-
   // Calculate buffer size
   let totalSize = 4; // Header
   let numDescriptors = 0;
@@ -401,14 +394,8 @@ export const encodeWithOriginalGrouping = ({ encodeEntries, formatVersion, origi
         writeUint8(group.bclass[i] || 0);
       }
 
-      // Sort entries for deterministic output
-      const sortedEntries = [...group.entries].sort((a, b) => {
-        const keyA = a.text || '';
-        const keyB = b.text || '';
-        return keyA.localeCompare(keyB);
-      });
-
-      for (const entry of sortedEntries) {
+      // Preserve original entry order (don't sort - device may be order-sensitive)
+      for (const entry of group.entries) {
         const carriers = padCarriers(entry.carriers);
         const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
 
@@ -446,13 +433,8 @@ export const encodeWithOriginalGrouping = ({ encodeEntries, formatVersion, origi
         writeUint8(group.ant[i] || 0);
       }
 
-      const sortedEntries = [...group.entries].sort((a, b) => {
-        const keyA = a.text || '';
-        const keyB = b.text || '';
-        return keyA.localeCompare(keyB);
-      });
-
-      for (const entry of sortedEntries) {
+      // Preserve original entry order (don't sort - device may be order-sensitive)
+      for (const entry of group.entries) {
         const carriers = padCarriers(entry.carriers);
         const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
 
@@ -501,13 +483,7 @@ export const encodeWithOriginalGrouping = ({ encodeEntries, formatVersion, origi
         }
       }
 
-      const sortedEntries = [...group.entries].sort((a, b) => {
-        const keyA = a.text || '';
-        const keyB = b.text || '';
-        return keyA.localeCompare(keyB);
-      });
-
-      for (const entry of sortedEntries) {
+      for (const entry of group.entries) {
         const carriers = padCarriers(entry.carriers);
         const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
 
@@ -658,9 +634,8 @@ export const encodeToBuffer = ({
       groupMap.get(dlKey).entries.push(entry);
     }
 
-    // Sort groups by key for deterministic output
-    const sortedKeys = Array.from(groupMap.keys()).sort();
-    return sortedKeys.map(key => groupMap.get(key));
+    // Preserve insertion order from Map (don't sort - device may be order-sensitive)
+    return Array.from(groupMap.values());
   };
 
   const groups137 = groupByDL(entries137);
@@ -724,10 +699,8 @@ export const encodeToBuffer = ({
       writeUint8(dlData.bclass[i] || 0);
     }
 
-    // Sort entries for deterministic output
-    const sortedEntries = [...entries].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
-
-    for (const entry of sortedEntries) {
+    // Preserve original entry order (don't sort - device may be order-sensitive)
+    for (const entry of entries) {
       const entryCarriers = padCarriers(entry.carriers);
       const ulCarriers = entryCarriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
 
@@ -765,9 +738,8 @@ export const encodeToBuffer = ({
       writeUint8(dlData.ant[i] || 0);
     }
 
-    const sortedEntries = [...entries].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
-
-    for (const entry of sortedEntries) {
+    // Preserve original entry order (don't sort - device may be order-sensitive)
+    for (const entry of entries) {
       const entryCarriers = padCarriers(entry.carriers);
       const ulCarriers = entryCarriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
 
@@ -817,9 +789,8 @@ export const encodeToBuffer = ({
       }
     }
 
-    const sortedEntries = [...entries].sort((a, b) => (a.text || '').localeCompare(b.text || ''));
-
-    for (const entry of sortedEntries) {
+    // Preserve original entry order (don't sort - device may be order-sensitive)
+    for (const entry of entries) {
       const entryCarriers = padCarriers(entry.carriers);
       const ulCarriers = entryCarriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
 
