@@ -18,11 +18,13 @@ import {
 
 /**
  * Compress buffer using zlib
+ * Uses level 6 (Z_DEFAULT_COMPRESSION) to match Python's zlib.compress() default
  */
 export const compressZlib = (arrayBuffer) => {
   try {
     const uncompressed = new Uint8Array(arrayBuffer);
-    const compressed = pako.deflate(uncompressed);
+    // Explicitly use level 6 for compatibility with Python's zlib.compress()
+    const compressed = pako.deflate(uncompressed, { level: 6 });
     return compressed.buffer;
   } catch (e) {
     throw new Error(`Zlib compression failed: ${e.message}`);
