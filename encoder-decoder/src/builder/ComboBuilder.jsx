@@ -301,6 +301,9 @@ export default function ComboBuilder({ onAddToEncoder }) {
 
     // Convert to encoder format
     const entries = validCombos.map(combo => {
+      // Clone carriers to avoid mutation
+      const carriers = combo.carriers.map(c => ({ ...c }));
+
       // Build combo string with PCell marker for display
       let displayText = combo.text;
       if (combo.pcellIndex !== null && combo.pcellIndex >= 0) {
@@ -309,12 +312,19 @@ export default function ComboBuilder({ onAddToEncoder }) {
         if (parts[combo.pcellIndex]) {
           parts[combo.pcellIndex] += 'A';
           displayText = parts.join('-');
+
+          // IMPORTANT: Also update the carrier's ulclass to match the text
+          // The 'A' suffix in NV format represents UL class A, not just PCell marker
+          if (carriers[combo.pcellIndex]) {
+            carriers[combo.pcellIndex].ulclass = 1;
+            carriers[combo.pcellIndex].ulClass = 'A';
+          }
         }
       }
 
       return {
         text: displayText,
-        carriers: combo.carriers,
+        carriers,  // Now synchronized with text
         streams: combo.streams,
         hasULCA: combo.hasULCA,
         pcellIndex: combo.pcellIndex
