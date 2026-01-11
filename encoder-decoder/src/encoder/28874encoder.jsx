@@ -1,409 +1,525 @@
 // ==================== ENCODER LOGIC ====================
 
 import pako from 'pako';
+import {
+  classToCC,
+  classLetterToNum,
+  classNumToLetter,
+  calculateStreams as sharedCalculateStreams,
+  hasULCA as sharedHasULCA,
+  getULCarriers,
+  getDLKey,
+  sortCarriersByBand,
+  validateCombo,
+  DEFAULT_LIMITS
+} from '../shared/index.js';
 
-// Compress buffer using zlib
+// ==================== COMPRESSION ====================
+
+/**
+ * Compress buffer using zlib
+ * Uses level 6 (Z_DEFAULT_COMPRESSION) to match Python's zlib.compress() default
+ */
 export const compressZlib = (arrayBuffer) => {
   try {
     const uncompressed = new Uint8Array(arrayBuffer);
-    const compressed = pako.deflate(uncompressed);
+    // Explicitly use level 6 for compatibility with Python's zlib.compress()
+    const compressed = pako.deflate(uncompressed, { level: 6 });
     return compressed.buffer;
   } catch (e) {
     throw new Error(`Zlib compression failed: ${e.message}`);
   }
 };
 
+// ==================== PARSING ====================
+
+/**
+ * Parse a combo string into carriers array
+ * Format: BAND + CLASS + [MIMO] + [ULCLASS]
+ * Example: "3A4A-7B2-20A2C"
+ */
 export const parseComboString = (comboStr) => {
-    const carriers = [];
-    const parts = comboStr.trim().split('-');
-    
-    for (const part of parts) {
-      if (!part) continue;
-      
-      const match = part.match(/^(\d+)([A-Z])(\d+)?([A-Z])?$/i);
-      
-      if (!match) {
-        throw new Error(`Invalid carrier format: ${part}`);
-      }
-      
-      const band = parseInt(match[1], 10);
-      const bclass = match[2].toUpperCase().charCodeAt(0) - 0x40;
-      const ant = match[3] ? parseInt(match[3], 10) : 2;
-      const ulclass = match[4] ? match[4].toUpperCase().charCodeAt(0) - 0x40 : 0;
-      
-      carriers.push({ band, bclass, ant, ulclass });
-    }
-    
-    return carriers;
-  };
+  const carriers = [];
+  const parts = comboStr.trim().split('-');
 
+  for (const part of parts) {
+    if (!part) continue;
+
+    const match = part.match(/^(\d+)([A-Z])(\d+)?([A-Z])?$/i);
+
+    if (!match) {
+      throw new Error(`Invalid carrier format: ${part}`);
+    }
+
+    const band = parseInt(match[1], 10);
+    const bclass = match[2].toUpperCase().charCodeAt(0) - 0x40;
+    const ant = match[3] ? parseInt(match[3], 10) : 2;
+    const ulclass = match[4] ? match[4].toUpperCase().charCodeAt(0) - 0x40 : 0;
+
+    carriers.push({ band, bclass, ant, ulclass });
+  }
+
+  return carriers;
+};
+
+// ==================== STREAMS CALCULATION ====================
+
+/**
+ * Calculate streams using unified formula: sum(CC_count * MIMO)
+ * CC_count: A=1, B=2, C=3, D=4, E=5, F=6
+ *
+ * This is the CORRECT formula. The old formula (bclass-1)*ant was WRONG.
+ */
 export const calculateStreams = (carriers) => {
-    let st = 0;
-    for (const c of carriers) {
-      if (c.bclass === 1) {
-        st += c.ant;
-      } else if (c.ant > 10) {
-        let temp = c.ant;
-        while (temp > 0) {
-          st += temp % 10;
-          temp = Math.floor(temp / 10);
-        }
-      } else {
-        st += (c.bclass - 1) * c.ant;
-      }
-    }
-    return st;
-  };
+  if (!carriers || carriers.length === 0) return 0;
 
+  let total = 0;
+  for (const c of carriers) {
+    const ccCount = classToCC(c.bclass);
+    const mimo = c.ant || 2;
+    total += ccCount * mimo;
+  }
+  return total;
+};
+
+// ==================== UL CA DETECTION ====================
+
+/**
+ * Check if carriers have UL CA
+ * UL CA exists when more than one carrier has UL configured
+ *
+ * FIXED: The old logic "ulCount > 1 || ulclass > 2" was incorrect.
+ * UL CA simply means multiple UL carriers.
+ */
 export const checkHasULCA = (carriers) => {
-    const ulCount = carriers.filter(c => c.ulclass > 0).length;
-    return ulCount > 1 || carriers.some(c => c.ulclass > 2);
-  };
+  if (!carriers || carriers.length === 0) return false;
 
+  const ulCount = carriers.filter(c => c.ulclass > 0).length;
+  return ulCount > 1;
+};
+
+// ==================== FILE PARSING ====================
+
+/**
+ * Parse combo text file into entries
+ */
 export const parseComboFile = (text, shouldRecalculate) => {
-    const lines = text.split('\n');
-    const entries = [];
-    
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('Input file') || trimmed.startsWith('Format') || 
-          trimmed.startsWith('Number') || trimmed.startsWith('Max streams')) {
-        continue;
-      }
-      
-      const match = trimmed.match(/^([A-Z0-9-]+)\s+(\d+)(\*)?/i);
-      if (match) {
-        try {
-          const comboStr = match[1];
-          const fileStreams = parseInt(match[2], 10);
-          const fileHasULCA = match[3] === '*';
-          const carriers = parseComboString(comboStr);
-          
-          const streams = shouldRecalculate ? calculateStreams(carriers) : fileStreams;
-          const hasULCA = shouldRecalculate ? checkHasULCA(carriers) : fileHasULCA;
-          
-          // Generate DL key for grouping (normalized to 6 elements)
-          const normalizedForKey = [];
-          for (let i = 0; i < 6; i++) {
-            normalizedForKey.push(carriers[i] || { band: 0, bclass: 0, ant: 0, ulclass: 0 });
-          }
-          const dlKey = normalizedForKey.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
-          
-          entries.push({
-            text: comboStr,
-            carriers,
-            streams,
-            hasULCA,
-            dlKey,
-            descType: 201 // Default, will be set based on settings
-          });
-        } catch (e) {
-          console.warn(`Skipping invalid line: ${trimmed}`, e);
-        }
-      }
-    }
-    
-    return entries;
-  };
+  const lines = text.split('\n');
+  const entries = [];
 
-  // Determine if a combo needs 201/202 format (has non-2 MIMO)
-export const needsExtendedFormat = (carriers) => {
-    return carriers.some(c => c.ant !== 2 && c.ant !== 0);
-  };
-
-  // Encode using original grouping logic from decoded file
-export const encodeWithOriginalGrouping = ({ encodeEntries, formatVersion, originalGroups }) => {
-    if (!originalGroups || originalGroups.length === 0) {
-      throw new Error('No original grouping data available');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('Input file') || trimmed.startsWith('Format') ||
+        trimmed.startsWith('Number') || trimmed.startsWith('Max streams')) {
+      continue;
     }
 
-    console.log('encodeWithOriginalGrouping called');
-    console.log('originalGroups count:', originalGroups.length);
-    console.log('encodeEntries count:', encodeEntries.length);
+    const match = trimmed.match(/^([A-Z0-9-]+)\s+(\d+)(\*)?/i);
+    if (match) {
+      try {
+        const comboStr = match[1];
+        const fileStreams = parseInt(match[2], 10);
+        const fileHasULCA = match[3] === '*';
+        const carriers = parseComboString(comboStr);
 
-    // Normalize carriers array to 6 elements
-    const normalizeCarriers = (carriers) => {
-      const result = [];
-      for (let i = 0; i < 6; i++) {
-        result.push(carriers[i] || { band: 0, bclass: 0, ant: 0, ulclass: 0 });
-      }
-      return result;
-    };
+        const streams = shouldRecalculate ? calculateStreams(carriers) : fileStreams;
+        const hasULCA = shouldRecalculate ? checkHasULCA(carriers) : fileHasULCA;
 
-    // Build DL key for comparison
-    const getDLKeyFromCarriers = (carriers) => {
-      const norm = normalizeCarriers(carriers);
-      return norm.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
-    };
+        // Generate DL key for grouping (normalized to 6 elements)
+        const dlKey = getDLKey(carriers);
 
-    const getGroupDLKey = (group) => {
-      const parts = [];
-      for (let i = 0; i < 6; i++) {
-        parts.push(`${group.band[i] || 0}:${group.bclass[i] || 0}:${group.ant[i] || 0}`);
-      }
-      return parts.join('|');
-    };
-
-    // Strategy: Use groupIdx if available, otherwise fall back to DL key matching
-    // This preserves the exact original structure including duplicate DL groups
-    
-    const encodingGroups = [];
-    const usedEntries = new Set();
-
-    // First pass: match entries to groups by groupIdx (preserves duplicates)
-    for (let groupIdx = 0; groupIdx < originalGroups.length; groupIdx++) {
-      const group = originalGroups[groupIdx];
-      const matchingEntries = [];
-      
-      for (let i = 0; i < encodeEntries.length; i++) {
-        if (usedEntries.has(i)) continue;
-        const entry = encodeEntries[i];
-        
-        // Match by groupIdx if available
-        if (entry.groupIdx === groupIdx) {
-          matchingEntries.push(entry);
-          usedEntries.add(i);
-        }
-      }
-      
-      if (matchingEntries.length > 0) {
-        encodingGroups.push({
-          descType: group.descType,
-          band: [...group.band],
-          bclass: [...group.bclass],
-          ant: [...group.ant],
-          entries: matchingEntries
+        entries.push({
+          text: comboStr,
+          carriers,
+          streams,
+          hasULCA,
+          dlKey,
+          descType: 201 // Default, will be set based on settings
         });
+      } catch (e) {
+        console.warn(`Skipping invalid line: ${trimmed}`, e);
       }
     }
+  }
 
-    console.log('After groupIdx matching:', encodingGroups.length, 'groups,', usedEntries.size, 'entries used');
+  return entries;
+};
 
-    // Second pass: match remaining entries by DL key (for new/edited entries)
-    if (usedEntries.size < encodeEntries.length) {
-      // Group remaining entries by DL key
-      const remainingByDL = new Map();
-      
-      for (let i = 0; i < encodeEntries.length; i++) {
-        if (usedEntries.has(i)) continue;
-        const entry = encodeEntries[i];
-        if (!entry.carriers || entry.carriers.length === 0) continue;
-        
-        const dlKey = getDLKeyFromCarriers(entry.carriers);
-        if (!remainingByDL.has(dlKey)) {
-          remainingByDL.set(dlKey, []);
-        }
-        remainingByDL.get(dlKey).push({ entry, index: i });
-      }
+// ==================== FORMAT DETECTION ====================
 
-      // Try to match to existing encoding groups by DL key
-      for (const [dlKey, entriesForKey] of remainingByDL) {
-        let matched = false;
-        
-        // Find an existing group with same DL key
-        for (const group of encodingGroups) {
-          const groupDLKey = getGroupDLKey({ band: group.band, bclass: group.bclass, ant: group.ant });
-          if (groupDLKey === dlKey) {
-            // Add to existing group
-            for (const { entry, index } of entriesForKey) {
-              group.entries.push(entry);
-              usedEntries.add(index);
-            }
-            matched = true;
-            break;
-          }
-        }
-        
-        // If no existing group, create a new one
-        if (!matched) {
-          const firstEntry = entriesForKey[0].entry;
-          const normalized = normalizeCarriers(firstEntry.carriers);
-          const needsExtended = normalized.some(c => c.ant !== 2 && c.ant !== 0 && c.band !== 0);
-          
-          encodingGroups.push({
-            descType: needsExtended ? 201 : 137,
-            band: normalized.map(c => c.band),
-            bclass: normalized.map(c => c.bclass),
-            ant: normalized.map(c => c.ant),
-            entries: entriesForKey.map(e => e.entry)
-          });
-          
-          entriesForKey.forEach(e => usedEntries.add(e.index));
-        }
-      }
-    }
+/**
+ * Determine if a combo needs extended format (201/202)
+ * Extended format is needed when MIMO != 2
+ */
+export const needsExtendedFormat = (carriers) => {
+  return carriers.some(c => c.ant !== 2 && c.ant !== 0);
+};
 
-    console.log('Final encodingGroups count:', encodingGroups.length);
-    console.log('Total entries used:', usedEntries.size);
+/**
+ * Determine if a combo needs full format (333/334)
+ * Full format is needed for MIMO > 4 or special cases
+ */
+export const needsFullFormat = (carriers) => {
+  return carriers.some(c => c.ant > 4);
+};
 
-    // Calculate buffer size
-    let totalSize = 4; // Header
-    let numDescriptors = 0;
-    
-    for (const group of encodingGroups) {
-      if (group.descType === 137) {
-        totalSize += 20;
-        totalSize += group.entries.length * 20;
-        numDescriptors += 1 + group.entries.length;
-      } else if (group.descType === 201) {
-        totalSize += 26;
-        totalSize += group.entries.length * 26;
-        numDescriptors += 1 + group.entries.length;
-      } else if (group.descType === 333) {
-        totalSize += 68;
-        totalSize += group.entries.length * 68;
-        numDescriptors += 1 + group.entries.length;
-      }
-    }
+/**
+ * Determine the minimum required format for carriers
+ * Returns: 137, 201, or 333
+ */
+export const determineMinimumFormat = (carriers) => {
+  if (needsFullFormat(carriers)) return 333;
+  if (needsExtendedFormat(carriers)) return 201;
+  return 137;
+};
 
-    const buffer = new ArrayBuffer(totalSize);
-    const view = new DataView(buffer);
-    let offset = 0;
+// ==================== VALIDATION ====================
 
-    const writeUint16 = (val) => {
-      view.setUint16(offset, val & 0xffff, true);
-      offset += 2;
-    };
+/**
+ * Validate carriers before encoding
+ * Returns { valid, errors, warnings }
+ */
+export const validateForEncoding = (carriers, options = {}) => {
+  const {
+    maxCC = 6,
+    maxDLCC = DEFAULT_LIMITS.maxDLCC,
+    maxULSCell = DEFAULT_LIMITS.maxULSCell,
+    maxTotalUL = DEFAULT_LIMITS.maxTotalUL
+  } = options;
 
-    const writeUint8 = (val) => {
-      view.setUint8(offset, val & 0xff);
-      offset += 1;
-    };
+  const result = validateCombo(carriers, { maxCC, maxDLCC, maxULSCell, maxTotalUL });
 
-    const writeZeros = (n) => {
-      for (let i = 0; i < n; i++) {
-        view.setUint8(offset++, 0);
-      }
-    };
+  // Additional encoding-specific checks
+  const totalCC = carriers.reduce((sum, c) => sum + classToCC(c.bclass), 0);
+  if (totalCC > 6) {
+    result.errors.push({
+      code: 'EXCEED_NV_LIMIT',
+      message: `Total CC count (${totalCC}) exceeds NV format limit of 6`,
+      severity: 'error'
+    });
+    result.valid = false;
+  }
 
-    // Write header
-    writeUint16(formatVersion);
-    writeUint16(numDescriptors);
+  return result;
+};
 
-    // Write each group
-    for (const group of encodingGroups) {
-      if (group.descType === 137) {
-        // Write DL descriptor (137)
-        writeUint16(137);
-        for (let i = 0; i < 6; i++) {
-          writeUint16(group.band[i] || 0);
-          writeUint8(group.bclass[i] || 0);
-        }
+// ==================== NORMALIZATION ====================
 
-        // Write UL descriptors (138) for each entry
-        for (const entry of group.entries) {
-          const carriers = normalizeCarriers(entry.carriers);
-          const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, 2);
+/**
+ * Normalize carriers to canonical order (sorted by band)
+ * This ensures deterministic output
+ */
+export const normalizeCarriers = (carriers) => {
+  if (!carriers || carriers.length === 0) return [];
 
-          writeUint16(138);
-          
-          if (ulCarriers.length > 0) {
-            writeUint16(ulCarriers[0].band);
-            writeUint8(ulCarriers[0].ulclass);
-          } else {
-            writeUint16(0);
-            writeUint8(0);
-          }
-          
-          if (ulCarriers.length > 1) {
-            writeUint16(ulCarriers[1].band);
-            writeUint8(ulCarriers[1].ulclass);
-          } else {
-            writeUint16(0);
-            writeUint8(0);
-          }
-          
-          writeZeros(12);
-        }
-      } else if (group.descType === 201) {
-        // Write DL descriptor (201)
-        writeUint16(201);
-        for (let i = 0; i < 6; i++) {
-          writeUint16(group.band[i] || 0);
-          writeUint8(group.bclass[i] || 0);
-          writeUint8(group.ant[i] || 0);
-        }
+  // Sort by band number, then by class
+  return [...carriers].sort((a, b) => {
+    if (a.band !== b.band) return a.band - b.band;
+    return a.bclass - b.bclass;
+  });
+};
 
-        // Write UL descriptors (202) for each entry
-        for (const entry of group.entries) {
-          const carriers = normalizeCarriers(entry.carriers);
-          const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, 2);
+/**
+ * Pad carriers array to 6 elements
+ */
+export const padCarriers = (carriers) => {
+  const result = [];
+  for (let i = 0; i < 6; i++) {
+    result.push(carriers[i] || { band: 0, bclass: 0, ant: 0, ulclass: 0 });
+  }
+  return result;
+};
 
-          writeUint16(202);
-          
-          if (ulCarriers.length > 0) {
-            writeUint16(ulCarriers[0].band);
-            writeUint8(ulCarriers[0].ulclass);
-            writeUint8(2);  // UL MIMO is always 2 in this format
-          } else {
-            writeUint16(0);
-            writeUint8(0);
-            writeUint8(0);
-          }
-          
-          if (ulCarriers.length > 1) {
-            writeUint16(ulCarriers[1].band);
-            writeUint8(ulCarriers[1].ulclass);
-            writeUint8(2);  // UL MIMO is always 2 in this format
-          } else {
-            writeUint16(0);
-            writeUint8(0);
-            writeUint8(0);
-          }
-          
-          writeZeros(16);
-        }
-      } else if (group.descType === 333) {
-        // Write DL descriptor (333)
-        writeUint16(333);
-        for (let i = 0; i < 6; i++) {
-          writeUint16(group.band[i] || 0);
-          writeUint8(group.bclass[i] || 0);
-          
-          const antStr = (group.ant[i] || 0).toString();
-          for (let j = 0; j < 8; j++) {
-            if (j < antStr.length) {
-              writeUint8(parseInt(antStr[j], 10));
-            } else {
-              writeUint8(0);
-            }
-          }
-        }
+// ==================== ENCODING WITH ORIGINAL GROUPING ====================
 
-        // Write UL descriptors (334) for each entry
-        for (const entry of group.entries) {
-          const carriers = normalizeCarriers(entry.carriers);
-          const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, 2);
+/**
+ * Encode using original grouping logic from decoded file
+ */
+export const encodeWithOriginalGrouping = ({ encodeEntries, formatVersion, originalGroups }) => {
+  if (!originalGroups || originalGroups.length === 0) {
+    throw new Error('No original grouping data available');
+  }
 
-          writeUint16(334);
-          
-          if (ulCarriers.length > 0) {
-            writeUint16(ulCarriers[0].band);
-            writeUint8(ulCarriers[0].ulclass);
-          } else {
-            writeUint16(0);
-            writeUint8(0);
-          }
-          writeZeros(8);
-          
-          if (ulCarriers.length > 1) {
-            writeUint16(ulCarriers[1].band);
-            writeUint8(ulCarriers[1].ulclass);
-          } else {
-            writeUint16(0);
-            writeUint8(0);
-          }
-          writeZeros(8);
-          
-          writeZeros(44);
-        }
-      }
-    }
+  console.log('encodeWithOriginalGrouping called');
+  console.log('originalGroups count:', originalGroups.length);
+  console.log('encodeEntries count:', encodeEntries.length);
 
-    return buffer;
+  const encodingGroups = [];
+  const usedEntries = new Set();
+
+  // Build DL key for comparison
+  const getDLKeyFromCarriers = (carriers) => {
+    const padded = padCarriers(carriers);
+    return padded.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
   };
 
-  // Encode with grouping optimization and mixed formats
+  const getGroupDLKey = (group) => {
+    const parts = [];
+    for (let i = 0; i < 6; i++) {
+      parts.push(`${group.band[i] || 0}:${group.bclass[i] || 0}:${group.ant[i] || 0}`);
+    }
+    return parts.join('|');
+  };
+
+  // First pass: match entries to groups by groupIdx
+  for (let groupIdx = 0; groupIdx < originalGroups.length; groupIdx++) {
+    const group = originalGroups[groupIdx];
+    const matchingEntries = [];
+
+    for (let i = 0; i < encodeEntries.length; i++) {
+      if (usedEntries.has(i)) continue;
+      const entry = encodeEntries[i];
+
+      if (entry.groupIdx === groupIdx) {
+        matchingEntries.push(entry);
+        usedEntries.add(i);
+      }
+    }
+
+    if (matchingEntries.length > 0) {
+      encodingGroups.push({
+        descType: group.descType,
+        band: [...group.band],
+        bclass: [...group.bclass],
+        ant: [...group.ant],
+        entries: matchingEntries
+      });
+    }
+  }
+
+  console.log('After groupIdx matching:', encodingGroups.length, 'groups,', usedEntries.size, 'entries used');
+
+  // Second pass: match remaining entries by DL key
+  if (usedEntries.size < encodeEntries.length) {
+    const remainingByDL = new Map();
+
+    for (let i = 0; i < encodeEntries.length; i++) {
+      if (usedEntries.has(i)) continue;
+      const entry = encodeEntries[i];
+      if (!entry.carriers || entry.carriers.length === 0) continue;
+
+      const dlKey = getDLKeyFromCarriers(entry.carriers);
+      if (!remainingByDL.has(dlKey)) {
+        remainingByDL.set(dlKey, []);
+      }
+      remainingByDL.get(dlKey).push({ entry, index: i });
+    }
+
+    for (const [dlKey, entriesForKey] of remainingByDL) {
+      let matched = false;
+
+      for (const group of encodingGroups) {
+        const groupDLKey = getGroupDLKey({ band: group.band, bclass: group.bclass, ant: group.ant });
+        if (groupDLKey === dlKey) {
+          for (const { entry, index } of entriesForKey) {
+            group.entries.push(entry);
+            usedEntries.add(index);
+          }
+          matched = true;
+          break;
+        }
+      }
+
+      if (!matched) {
+        const firstEntry = entriesForKey[0].entry;
+        const padded = padCarriers(firstEntry.carriers);
+        const needsExt = padded.some(c => c.ant !== 2 && c.ant !== 0 && c.band !== 0);
+
+        encodingGroups.push({
+          descType: needsExt ? 201 : 137,
+          band: padded.map(c => c.band),
+          bclass: padded.map(c => c.bclass),
+          ant: padded.map(c => c.ant),
+          entries: entriesForKey.map(e => e.entry)
+        });
+
+        entriesForKey.forEach(e => usedEntries.add(e.index));
+      }
+    }
+  }
+
+  console.log('Final encodingGroups count:', encodingGroups.length);
+  console.log('Total entries used:', usedEntries.size);
+
+  // Calculate buffer size
+  let totalSize = 4; // Header
+  let numDescriptors = 0;
+
+  for (const group of encodingGroups) {
+    if (group.descType === 137) {
+      totalSize += 20;
+      totalSize += group.entries.length * 20;
+      numDescriptors += 1 + group.entries.length;
+    } else if (group.descType === 201) {
+      totalSize += 26;
+      totalSize += group.entries.length * 26;
+      numDescriptors += 1 + group.entries.length;
+    } else if (group.descType === 333) {
+      totalSize += 68;
+      totalSize += group.entries.length * 68;
+      numDescriptors += 1 + group.entries.length;
+    }
+  }
+
+  const buffer = new ArrayBuffer(totalSize);
+  const view = new DataView(buffer);
+  let offset = 0;
+
+  const writeUint16 = (val) => {
+    view.setUint16(offset, val & 0xffff, true);
+    offset += 2;
+  };
+
+  const writeUint8 = (val) => {
+    view.setUint8(offset, val & 0xff);
+    offset += 1;
+  };
+
+  const writeZeros = (n) => {
+    for (let i = 0; i < n; i++) {
+      view.setUint8(offset++, 0);
+    }
+  };
+
+  // Write header
+  writeUint16(formatVersion);
+  writeUint16(numDescriptors);
+
+  // Write each group
+  for (const group of encodingGroups) {
+    if (group.descType === 137) {
+      writeUint16(137);
+      for (let i = 0; i < 6; i++) {
+        writeUint16(group.band[i] || 0);
+        writeUint8(group.bclass[i] || 0);
+      }
+
+      // Preserve original entry order (don't sort - device may be order-sensitive)
+      for (const entry of group.entries) {
+        const carriers = padCarriers(entry.carriers);
+        const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
+
+        // Warn if UL carriers are being truncated
+        const allUL = carriers.filter(c => c.ulclass > 0);
+        if (allUL.length > DEFAULT_LIMITS.maxTotalUL) {
+          console.warn(`Entry "${entry.text}" has ${allUL.length} UL carriers, truncating to ${DEFAULT_LIMITS.maxTotalUL}`);
+        }
+
+        writeUint16(138);
+
+        if (ulCarriers.length > 0) {
+          writeUint16(ulCarriers[0].band);
+          writeUint8(ulCarriers[0].ulclass);
+        } else {
+          writeUint16(0);
+          writeUint8(0);
+        }
+
+        if (ulCarriers.length > 1) {
+          writeUint16(ulCarriers[1].band);
+          writeUint8(ulCarriers[1].ulclass);
+        } else {
+          writeUint16(0);
+          writeUint8(0);
+        }
+
+        writeZeros(12);
+      }
+    } else if (group.descType === 201) {
+      writeUint16(201);
+      for (let i = 0; i < 6; i++) {
+        writeUint16(group.band[i] || 0);
+        writeUint8(group.bclass[i] || 0);
+        writeUint8(group.ant[i] || 0);
+      }
+
+      // Preserve original entry order (don't sort - device may be order-sensitive)
+      for (const entry of group.entries) {
+        const carriers = padCarriers(entry.carriers);
+        const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
+
+        const allUL = carriers.filter(c => c.ulclass > 0);
+        if (allUL.length > DEFAULT_LIMITS.maxTotalUL) {
+          console.warn(`Entry "${entry.text}" has ${allUL.length} UL carriers, truncating to ${DEFAULT_LIMITS.maxTotalUL}`);
+        }
+
+        writeUint16(202);
+
+        if (ulCarriers.length > 0) {
+          writeUint16(ulCarriers[0].band);
+          writeUint8(ulCarriers[0].ulclass);
+          writeUint8(2); // UL MIMO - typically 2 for UL
+        } else {
+          writeUint16(0);
+          writeUint8(0);
+          writeUint8(0);
+        }
+
+        if (ulCarriers.length > 1) {
+          writeUint16(ulCarriers[1].band);
+          writeUint8(ulCarriers[1].ulclass);
+          writeUint8(2);
+        } else {
+          writeUint16(0);
+          writeUint8(0);
+          writeUint8(0);
+        }
+
+        writeZeros(16);
+      }
+    } else if (group.descType === 333) {
+      writeUint16(333);
+      for (let i = 0; i < 6; i++) {
+        writeUint16(group.band[i] || 0);
+        writeUint8(group.bclass[i] || 0);
+
+        const antStr = (group.ant[i] || 0).toString();
+        for (let j = 0; j < 8; j++) {
+          if (j < antStr.length) {
+            writeUint8(parseInt(antStr[j], 10));
+          } else {
+            writeUint8(0);
+          }
+        }
+      }
+
+      for (const entry of group.entries) {
+        const carriers = padCarriers(entry.carriers);
+        const ulCarriers = carriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
+
+        writeUint16(334);
+
+        if (ulCarriers.length > 0) {
+          writeUint16(ulCarriers[0].band);
+          writeUint8(ulCarriers[0].ulclass);
+        } else {
+          writeUint16(0);
+          writeUint8(0);
+        }
+        writeZeros(8);
+
+        if (ulCarriers.length > 1) {
+          writeUint16(ulCarriers[1].band);
+          writeUint8(ulCarriers[1].ulclass);
+        } else {
+          writeUint16(0);
+          writeUint8(0);
+        }
+        writeZeros(8);
+
+        writeZeros(44);
+      }
+    }
+  }
+
+  return buffer;
+};
+
+// ==================== MAIN ENCODING FUNCTION ====================
+
+/**
+ * Encode entries to binary buffer with grouping optimization and mixed formats
+ */
 export const encodeToBuffer = ({
   encodeEntries,
   formatVersion,
@@ -413,197 +529,294 @@ export const encodeToBuffer = ({
   preserveOriginalGrouping,
   originalGroups
 }) => {
-    if (encodeEntries.length === 0) {
-      throw new Error('No entries to encode');
+  if (encodeEntries.length === 0) {
+    throw new Error('No entries to encode');
+  }
+
+  console.log('encodeToBuffer called');
+  console.log('preserveOriginalGrouping:', preserveOriginalGrouping);
+  console.log('originalGroups:', originalGroups ? originalGroups.length : 'null');
+
+  // Use original grouping if enabled and available
+  if (preserveOriginalGrouping && originalGroups && originalGroups.length > 0) {
+    console.log('Using encodeWithOriginalGrouping');
+    return encodeWithOriginalGrouping({ encodeEntries, formatVersion, originalGroups });
+  }
+
+  console.log('Using auto-detect mode');
+
+  // Validate all entries before encoding
+  for (const entry of encodeEntries) {
+    if (!entry.carriers || entry.carriers.length === 0) continue;
+    const validation = validateForEncoding(entry.carriers);
+    if (!validation.valid) {
+      console.warn(`Validation warnings for "${entry.text}":`, validation.errors);
     }
+  }
 
-    console.log('encodeToBuffer called');
-    console.log('preserveOriginalGrouping:', preserveOriginalGrouping);
-    console.log('originalGroups:', originalGroups ? originalGroups.length : 'null');
+  // Separate entries by format type if auto-detect is enabled
+  let entries137 = [];
+  let entries201 = [];
+  let entries333 = [];
 
-    // Use original grouping if enabled and available
-    if (preserveOriginalGrouping && originalGroups && originalGroups.length > 0) {
-      console.log('Using encodeWithOriginalGrouping');
-      return encodeWithOriginalGrouping({ encodeEntries, formatVersion, originalGroups });
+  for (const entry of encodeEntries) {
+    if (!entry.carriers || entry.carriers.length === 0) continue;
+
+    const minFormat = autoDescriptorType
+      ? determineMinimumFormat(entry.carriers)
+      : descriptorType;
+
+    if (minFormat === 333) {
+      entries333.push(entry);
+    } else if (minFormat === 201 || (autoDescriptorType && needsExtendedFormat(entry.carriers))) {
+      entries201.push(entry);
+    } else {
+      entries137.push(entry);
     }
+  }
 
-    console.log('Using auto-detect mode');
-
-    // Separate entries by format type if auto-detect is enabled
-    let entries137 = [];
-    let entries201 = [];
-    
-    if (autoDescriptorType) {
-      for (const entry of encodeEntries) {
-        if (needsExtendedFormat(entry.carriers)) {
-          entries201.push(entry);
-        } else {
-          entries137.push(entry);
-        }
-      }
-    } else if (descriptorType === 137) {
+  // If not auto-detect, use specified format
+  if (!autoDescriptorType) {
+    if (descriptorType === 137) {
       entries137 = [...encodeEntries];
+      entries201 = [];
+      entries333 = [];
+    } else if (descriptorType === 333) {
+      entries333 = [...encodeEntries];
+      entries137 = [];
+      entries201 = [];
     } else {
       entries201 = [...encodeEntries];
+      entries137 = [];
+      entries333 = [];
+    }
+  }
+
+  // Group entries by DL key (with canonical ordering)
+  // Returns array of group objects with { dlData, entries }
+  const groupByDL = (entries) => {
+    if (!optimizeGrouping) {
+      // Each entry in its own group, with its own DL data
+      return entries.map(e => {
+        const normalized = normalizeCarriers(e.carriers || []);
+        const padded = padCarriers(normalized);
+        return {
+          dlData: {
+            band: padded.map(c => c.band),
+            bclass: padded.map(c => c.bclass),
+            ant: padded.map(c => c.ant)
+          },
+          entries: [e]
+        };
+      }).filter(g => g.entries[0].carriers && g.entries[0].carriers.length > 0);
     }
 
-    // Group entries by DL key
-    const groupByDL = (entries) => {
-      if (!optimizeGrouping) {
-        return entries.map(e => [e]);
-      }
-      const groupMap = new Map();
-      for (const entry of entries) {
-        const dlKey = entry.dlKey || entry.carriers.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
-        if (!groupMap.has(dlKey)) {
-          groupMap.set(dlKey, []);
-        }
-        groupMap.get(dlKey).push(entry);
-      }
-      return Array.from(groupMap.values());
-    };
+    const groupMap = new Map();
+    for (const entry of entries) {
+      if (!entry.carriers || entry.carriers.length === 0) continue;
 
-    const groups137 = groupByDL(entries137);
-    const groups201 = groupByDL(entries201);
+      // Normalize carriers for canonical key
+      const normalized = normalizeCarriers(entry.carriers);
+      const padded = padCarriers(normalized);
+      const dlKey = getDLKey(normalized);
 
-    // Calculate buffer size
-    let totalSize = 4; // Header
-    let numDescriptors = 0;
-    
-    // 137/138 groups
-    for (const group of groups137) {
-      totalSize += 20; // One 137 descriptor
-      totalSize += group.length * 20; // 138 descriptors
-      numDescriptors += 1 + group.length;
-    }
-    
-    // 201/202 groups
-    for (const group of groups201) {
-      totalSize += 26; // One 201 descriptor
-      totalSize += group.length * 26; // 202 descriptors
-      numDescriptors += 1 + group.length;
+      if (!groupMap.has(dlKey)) {
+        // Store the canonical DL data in the group (not just entries)
+        groupMap.set(dlKey, {
+          dlData: {
+            band: padded.map(c => c.band),
+            bclass: padded.map(c => c.bclass),
+            ant: padded.map(c => c.ant)
+          },
+          entries: []
+        });
+      }
+      groupMap.get(dlKey).entries.push(entry);
     }
 
-    const buffer = new ArrayBuffer(totalSize);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    const writeUint16 = (val) => {
-      view.setUint16(offset, val & 0xffff, true);
-      offset += 2;
-    };
-
-    const writeUint8 = (val) => {
-      view.setUint8(offset, val & 0xff);
-      offset += 1;
-    };
-
-    const writeZeros = (n) => {
-      for (let i = 0; i < n; i++) {
-        view.setUint8(offset++, 0);
-      }
-    };
-
-    // Write header
-    writeUint16(formatVersion);
-    writeUint16(numDescriptors);
-
-    // Write 137/138 groups first
-    for (const group of groups137) {
-      const firstEntry = group[0];
-      const carriers = [...firstEntry.carriers];
-      
-      while (carriers.length < 6) {
-        carriers.push({ band: 0, bclass: 0, ant: 0, ulclass: 0 });
-      }
-
-      // Write DL descriptor (137)
-      writeUint16(137);
-      for (let i = 0; i < 6; i++) {
-        writeUint16(carriers[i].band);
-        writeUint8(carriers[i].bclass);
-      }
-
-      // Write UL descriptors (138) for each combo
-      for (const entry of group) {
-        const entryCarriers = [...entry.carriers];
-        while (entryCarriers.length < 6) {
-          entryCarriers.push({ band: 0, bclass: 0, ant: 0, ulclass: 0 });
-        }
-        
-        const ulCarriers = entryCarriers.filter(c => c.ulclass > 0).slice(0, 2);
-
-        writeUint16(138);
-        
-        if (ulCarriers.length > 0) {
-          writeUint16(ulCarriers[0].band);
-          writeUint8(ulCarriers[0].ulclass);
-        } else {
-          writeUint16(0);
-          writeUint8(0);
-        }
-        
-        if (ulCarriers.length > 1) {
-          writeUint16(ulCarriers[1].band);
-          writeUint8(ulCarriers[1].ulclass);
-        } else {
-          writeUint16(0);
-          writeUint8(0);
-        }
-        
-        writeZeros(12);
-      }
-    }
-
-    // Write 201/202 groups
-    for (const group of groups201) {
-      const firstEntry = group[0];
-      const carriers = [...firstEntry.carriers];
-      
-      while (carriers.length < 6) {
-        carriers.push({ band: 0, bclass: 0, ant: 0, ulclass: 0 });
-      }
-
-      // Write DL descriptor (201)
-      writeUint16(201);
-      for (let i = 0; i < 6; i++) {
-        writeUint16(carriers[i].band);
-        writeUint8(carriers[i].bclass);
-        writeUint8(carriers[i].ant);
-      }
-
-      // Write UL descriptors (202) for each combo
-      for (const entry of group) {
-        const entryCarriers = [...entry.carriers];
-        while (entryCarriers.length < 6) {
-          entryCarriers.push({ band: 0, bclass: 0, ant: 0, ulclass: 0 });
-        }
-        
-        const ulCarriers = entryCarriers.filter(c => c.ulclass > 0).slice(0, 2);
-
-        writeUint16(202);
-        
-        if (ulCarriers.length > 0) {
-          writeUint16(ulCarriers[0].band);
-          writeUint8(ulCarriers[0].ulclass);
-        } else {
-          writeUint16(0);
-          writeUint8(0);
-        }
-        writeUint8(0);
-        
-        if (ulCarriers.length > 1) {
-          writeUint16(ulCarriers[1].band);
-          writeUint8(ulCarriers[1].ulclass);
-        } else {
-          writeUint16(0);
-          writeUint8(0);
-        }
-        writeUint8(0);
-        
-        writeZeros(16);
-      }
-    }
-
-    return buffer;
+    // Preserve insertion order from Map (don't sort - device may be order-sensitive)
+    return Array.from(groupMap.values());
   };
+
+  const groups137 = groupByDL(entries137);
+  const groups201 = groupByDL(entries201);
+  const groups333 = groupByDL(entries333);
+
+  // Calculate buffer size
+  let totalSize = 4; // Header
+  let numDescriptors = 0;
+
+  for (const group of groups137) {
+    totalSize += 20; // One 137 descriptor
+    totalSize += group.entries.length * 20; // 138 descriptors
+    numDescriptors += 1 + group.entries.length;
+  }
+
+  for (const group of groups201) {
+    totalSize += 26; // One 201 descriptor
+    totalSize += group.entries.length * 26; // 202 descriptors
+    numDescriptors += 1 + group.entries.length;
+  }
+
+  for (const group of groups333) {
+    totalSize += 68; // One 333 descriptor
+    totalSize += group.entries.length * 68; // 334 descriptors
+    numDescriptors += 1 + group.entries.length;
+  }
+
+  const buffer = new ArrayBuffer(totalSize);
+  const view = new DataView(buffer);
+  let offset = 0;
+
+  const writeUint16 = (val) => {
+    view.setUint16(offset, val & 0xffff, true);
+    offset += 2;
+  };
+
+  const writeUint8 = (val) => {
+    view.setUint8(offset, val & 0xff);
+    offset += 1;
+  };
+
+  const writeZeros = (n) => {
+    for (let i = 0; i < n; i++) {
+      view.setUint8(offset++, 0);
+    }
+  };
+
+  // Write header
+  writeUint16(formatVersion);
+  writeUint16(numDescriptors);
+
+  // Write 137/138 groups
+  for (const group of groups137) {
+    // Use pre-computed DL data from the group
+    const { dlData, entries } = group;
+
+    writeUint16(137);
+    for (let i = 0; i < 6; i++) {
+      writeUint16(dlData.band[i] || 0);
+      writeUint8(dlData.bclass[i] || 0);
+    }
+
+    // Preserve original entry order (don't sort - device may be order-sensitive)
+    for (const entry of entries) {
+      const entryCarriers = padCarriers(entry.carriers);
+      const ulCarriers = entryCarriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
+
+      writeUint16(138);
+
+      if (ulCarriers.length > 0) {
+        writeUint16(ulCarriers[0].band);
+        writeUint8(ulCarriers[0].ulclass);
+      } else {
+        writeUint16(0);
+        writeUint8(0);
+      }
+
+      if (ulCarriers.length > 1) {
+        writeUint16(ulCarriers[1].band);
+        writeUint8(ulCarriers[1].ulclass);
+      } else {
+        writeUint16(0);
+        writeUint8(0);
+      }
+
+      writeZeros(12);
+    }
+  }
+
+  // Write 201/202 groups
+  for (const group of groups201) {
+    // Use pre-computed DL data from the group
+    const { dlData, entries } = group;
+
+    writeUint16(201);
+    for (let i = 0; i < 6; i++) {
+      writeUint16(dlData.band[i] || 0);
+      writeUint8(dlData.bclass[i] || 0);
+      writeUint8(dlData.ant[i] || 0);
+    }
+
+    // Preserve original entry order (don't sort - device may be order-sensitive)
+    for (const entry of entries) {
+      const entryCarriers = padCarriers(entry.carriers);
+      const ulCarriers = entryCarriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
+
+      writeUint16(202);
+
+      if (ulCarriers.length > 0) {
+        writeUint16(ulCarriers[0].band);
+        writeUint8(ulCarriers[0].ulclass);
+        writeUint8(2); // UL MIMO
+      } else {
+        writeUint16(0);
+        writeUint8(0);
+        writeUint8(0);
+      }
+
+      if (ulCarriers.length > 1) {
+        writeUint16(ulCarriers[1].band);
+        writeUint8(ulCarriers[1].ulclass);
+        writeUint8(2); // UL MIMO
+      } else {
+        writeUint16(0);
+        writeUint8(0);
+        writeUint8(0);
+      }
+
+      writeZeros(16);
+    }
+  }
+
+  // Write 333/334 groups
+  for (const group of groups333) {
+    // Use pre-computed DL data from the group
+    const { dlData, entries } = group;
+
+    writeUint16(333);
+    for (let i = 0; i < 6; i++) {
+      writeUint16(dlData.band[i] || 0);
+      writeUint8(dlData.bclass[i] || 0);
+
+      const antStr = (dlData.ant[i] || 0).toString();
+      for (let j = 0; j < 8; j++) {
+        if (j < antStr.length) {
+          writeUint8(parseInt(antStr[j], 10));
+        } else {
+          writeUint8(0);
+        }
+      }
+    }
+
+    // Preserve original entry order (don't sort - device may be order-sensitive)
+    for (const entry of entries) {
+      const entryCarriers = padCarriers(entry.carriers);
+      const ulCarriers = entryCarriers.filter(c => c.ulclass > 0).slice(0, DEFAULT_LIMITS.maxTotalUL);
+
+      writeUint16(334);
+
+      if (ulCarriers.length > 0) {
+        writeUint16(ulCarriers[0].band);
+        writeUint8(ulCarriers[0].ulclass);
+      } else {
+        writeUint16(0);
+        writeUint8(0);
+      }
+      writeZeros(8);
+
+      if (ulCarriers.length > 1) {
+        writeUint16(ulCarriers[1].band);
+        writeUint8(ulCarriers[1].ulclass);
+      } else {
+        writeUint16(0);
+        writeUint8(0);
+      }
+      writeZeros(8);
+
+      writeZeros(44);
+    }
+  }
+
+  return buffer;
+};

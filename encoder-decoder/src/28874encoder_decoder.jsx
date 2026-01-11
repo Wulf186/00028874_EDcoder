@@ -3,6 +3,7 @@ import { decodeFile } from './decoder/28874decoder';
 import { encodeToBuffer } from './encoder/28874encoder';
 import { useEncoderTableHandlers, useExportHandlers, useFileHandlers } from './utils/utils';
 import ComboBuilder from './builder/ComboBuilder';
+import { getDLKey, sortCarriersByBand } from './shared/index.js';
 
 export default function NVItemEncoderDecoder() {
   const [activeTab, setActiveTab] = useState('decoder');
@@ -587,14 +588,20 @@ export default function NVItemEncoderDecoder() {
               // Convert generated combos to encoder entry format
               const newEntries = combos.map(combo => {
                 try {
-                  const carriers = combo.bandConfigs.map(bc => ({
-                    band: bc.band,
-                    bclass: bc.bclass.charCodeAt(0) - 0x40,
-                    ant: bc.mimo,
-                    ulclass: bc.ulca ? 1 : 0
+                  // Clone carriers to avoid reference issues
+                  const carriers = (combo.carriers || []).map(c => ({
+                    band: c.band,
+                    bclass: c.bclass,
+                    ant: c.ant,
+                    ulclass: c.ulclass || 0,
+                    dlClass: c.dlClass,
+                    mimoDl: c.mimoDl,
+                    ulClass: c.ulClass
                   }));
 
-                  const dlKey = carriers.map(c => `${c.band}:${c.bclass}:${c.ant}`).join('|');
+                  // Use proper getDLKey with sorted carriers for consistency
+                  const sortedCarriers = sortCarriersByBand(carriers);
+                  const dlKey = getDLKey(sortedCarriers);
 
                   return {
                     text: combo.text,
@@ -602,7 +609,7 @@ export default function NVItemEncoderDecoder() {
                     streams: combo.streams,
                     hasULCA: combo.hasULCA,
                     dlKey,
-                    descType: 201 // Default
+                    descType: carriers.some(c => c.ant !== 2 && c.ant !== 0) ? 201 : 137
                   };
                 } catch (e) {
                   console.error('Error converting combo:', e);

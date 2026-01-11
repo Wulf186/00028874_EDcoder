@@ -1,6 +1,7 @@
 // ==================== DECODER LOGIC ====================
 
 import pako from 'pako';
+import { classToCC } from '../shared/index.js';
 
 // Check if data is zlib compressed
 const isZlibCompressed = (data) => {
@@ -97,27 +98,31 @@ export const decodeFile = (arrayBuffer) => {
         comboStr += String.fromCharCode(ulclass[i] + 0x40);
       }
 
-      if (bclass[i] === 1) {
-        st += ant[i];
-      } else if (ant[i] > 10) {
-        let temp = ant[i];
-        while (temp > 0) {
-          st += temp % 10;
-          temp = Math.floor(temp / 10);
-        }
-      } else {
-        st += (bclass[i] - 1) * ant[i];
-      }
+      // CORRECT formula: streams = CC_count * MIMO
+      // CC_count = bclass (A=1, B=2, C=3, etc.)
+      // OLD WRONG formula was: (bclass-1)*ant for bclass > 1
+      const ccCount = classToCC(bclass[i]);
+      const mimo = ant[i] || 2;
+      st += ccCount * mimo;
 
       hasCarrier = true;
     }
 
     if (!hasCarrier) return null;
 
+    // Determine hasULCA: UL CA exists when more than one carrier has UL
+    // OLD WRONG logic: ulca > 0 (which was set by ulClass > 2 condition)
+    // CORRECT logic: count carriers with ulclass > 0, UL CA if count > 1
+    let ulCount = 0;
+    for (let i = 0; i < 6; i++) {
+      if (ulclass[i] > 0) ulCount++;
+    }
+    const hasULCA = ulCount > 1;
+
     return {
       text: comboStr,
       streams: st,
-      hasULCA: ulca > 0,
+      hasULCA: hasULCA,
       descType: descType,
       groupIdx: groupIdx,
       dlKey: band.map((b, i) => `${b}:${bclass[i]}:${ant[i]}`).join('|'),
